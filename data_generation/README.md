@@ -45,6 +45,10 @@ pretraining is enabled.
 
 ## Usage
 
+The default training-view configuration uses 20 base probes. Each base probe
+is perturbed once, and only the resulting 20 perturbed views are saved as
+`condition_0..19` and `supervise_0..19`; base probes are not training views.
+
 Run STL QC first:
 
 ```bash

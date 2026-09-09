@@ -35,8 +35,8 @@ N_SURF = 4096
 N_VOL = 32768
 N_TOTAL = N_SURF + N_VOL
 TARGET_LENGTH = 5.0
-N_RANDOM_WALKS = 100
-BASE_WALKS = 10
+N_RANDOM_WALKS = 20
+BASE_WALKS = 20
 PERTURB_SIGMA = 0.05
 WALK_STEPS = 3
 MIN_STEP = 0.0
@@ -814,14 +814,9 @@ def process_single_mesh(stl_path, save_root, dataset_name,
                 collision_backend=collision_backend)
             base_walk_results.append(result)
 
-        for j, result in enumerate(base_walk_results):
-            np.save(os.path.join(save_dir, f"supervise_{j}.npy"),
-                    result['supervise'].astype(np_save_dtype))
-            np.save(os.path.join(save_dir, f"condition_{j}.npy"),
-                    result['condition'].astype(np_save_dtype))
-
-        # Generate perturbed walks
-        for j in range(n_base_walks, n_random_walks):
+        # Generate one perturbed training view from each base probe. Base
+        # walks are seeds only and are never saved as training views.
+        for j in range(n_random_walks):
             base_idx = j % n_base_walks
             base_dirs = base_walk_results[base_idx]['directions']
             base_steps = base_walk_results[base_idx]['step_lengths']
@@ -919,7 +914,7 @@ def main():
     parser.add_argument('--n_random_walks', type=int, default=N_RANDOM_WALKS,
                         help='Number of lifted dynamics samples per mesh')
     parser.add_argument('--base_walks', type=int, default=BASE_WALKS,
-                        help='Number of independently sampled base walks before perturbation')
+                        help='Number of base probes; each yields one perturbed training view')
     parser.add_argument('--perturb_sigma', type=float, default=PERTURB_SIGMA,
                         help='Gaussian perturbation std for directions after base walks')
     parser.add_argument('--geometry_backend', type=str, default='auto',

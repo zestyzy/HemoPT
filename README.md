@@ -125,6 +125,10 @@ and `training_logs/`. These directories are ignored by git.
 
 ## Main HemoPT Pretraining
 
+The training configuration uses 20 base probes, each perturbed once, yielding
+20 final training views. Base probes themselves are not included as training
+views. Use `--base_walks 20 --n_random_walks 20`.
+
 After preparing a processed vascular pretraining dataset, run:
 
 ```bash
