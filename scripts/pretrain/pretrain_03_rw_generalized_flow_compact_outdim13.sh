@@ -79,7 +79,7 @@ PYTHON=${PYTHON:-python}
 --prefetch_factor "$PREFETCH_FACTOR" \
 --eval 0 \
 --save_name "$SAVE_NAME" \
---n_random_walks 10 \
+--n_random_walks 20 \
 --vascular_physics_proxy true \
 --vascular_physics_proxy_mode conditioned_generalized_flow_compact \
 --vascular_physics_weight "$PHYSICS_WEIGHT" \
