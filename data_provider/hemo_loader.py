@@ -29,6 +29,7 @@ class HemoPT(object):
     """
 
     def __init__(self, args):
+        self.args = args
         self.data_path = args.data_path
         self.batch_size = args.batch_size
         self.ntrain = args.ntrain
@@ -149,7 +150,10 @@ class HemoPT(object):
             elif self.norm_type == 'UnitGaussianNormalizer':
                 self.y_normalizer = UnitGaussianNormalizer(train_y)
             train_y = self.y_normalizer.encode(train_y)
-            self.y_normalizer.cuda()
+            if torch.cuda.is_available() and getattr(self.args, "device", "auto") != "cpu":
+                self.y_normalizer.cuda()
+            else:
+                self.y_normalizer.cpu()
 
         # Loader convention: TensorDataset(pos, fx, cond, y).
         # hemo_cfd_finetune appends a 4-channel hemo prompt, so fun_dim=8.

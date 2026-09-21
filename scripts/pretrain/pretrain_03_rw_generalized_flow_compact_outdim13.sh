@@ -34,7 +34,7 @@ export PYTHONUNBUFFERED=1
 exec > >(tee "$LOG_FILE") 2>&1
 
 echo "Writing log to: $LOG_FILE"
-echo "Experiment: RW + conditioned generalized_flow_compact, out_dim=13"
+echo "Experiment: RW-20 + conditioned generalized_flow_compact, out_dim=13"
 echo "Pretrain data: $DATA_PATH"
 echo "Checkpoint: $ROOT/checkpoints/${SAVE_NAME}.pt"
 echo "Best checkpoint mirror: $ROOT/checkpoints/${SAVE_NAME}_best.pt"
@@ -80,6 +80,7 @@ PYTHON=${PYTHON:-python}
 --eval 0 \
 --save_name "$SAVE_NAME" \
 --n_random_walks 20 \
+--base_walks 20 \
 --vascular_physics_proxy true \
 --vascular_physics_proxy_mode conditioned_generalized_flow_compact \
 --vascular_physics_weight "$PHYSICS_WEIGHT" \

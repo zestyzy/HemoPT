@@ -34,6 +34,7 @@ class AneumoCFD(object):
     """Loader for processed aneumo CFD interior point-cloud samples."""
 
     def __init__(self, args):
+        self.args = args
         self.data_path = args.data_path
         self.batch_size = args.batch_size
         self.ntrain = args.ntrain
@@ -125,7 +126,10 @@ class AneumoCFD(object):
             else:
                 self.y_normalizer = UnitGaussianNormalizer(train_y)
             train_y = self.y_normalizer.encode(train_y)
-            self.y_normalizer.cuda()
+            if torch.cuda.is_available() and getattr(self.args, "device", "auto") != "cpu":
+                self.y_normalizer.cuda()
+            else:
+                self.y_normalizer.cpu()
 
         loader_kwargs = {
             "num_workers": self.num_workers,

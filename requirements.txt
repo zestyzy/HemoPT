@@ -1,6 +1,6 @@
-h5py==3.8.0
-scipy==1.7.3
-torch
+torch>=1.13.0
+h5py>=3.8.0
+scipy>=1.9.0
 vtk
 timm
 matplotlib
@@ -8,5 +8,6 @@ einops
 pyvista
 nibabel
 scikit-image
-trimesh
+trimesh>=4.0.0
 tqdm
+fcpw>=1.2.0

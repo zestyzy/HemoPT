@@ -27,7 +27,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dataset", type=str, default="synthetic")
     parser.add_argument("--num_samples", type=int, default=4)
     parser.add_argument("--num_points", type=int, default=64)
-    parser.add_argument("--n_random_walks", type=int, default=2)
+    parser.add_argument("--n_random_walks", type=int, default=20)
+    parser.add_argument("--base_walks", type=int, default=20)
+    parser.add_argument("--perturb_sigma", type=float, default=0.05)
     parser.add_argument("--seed", type=int, default=2026)
     return parser.parse_args()
 
@@ -37,7 +39,7 @@ def normalize(vectors: np.ndarray, eps: float = 1e-8) -> np.ndarray:
     return vectors / np.maximum(norm, eps)
 
 
-def make_sample(rng: np.random.Generator, num_points: int, n_random_walks: int):
+def make_sample(rng: np.random.Generator, num_points: int, n_random_walks: int, perturb_sigma: float):
     axial = rng.uniform(-1.0, 1.0, size=(num_points, 1)).astype(np.float32)
     theta = rng.uniform(0.0, 2.0 * np.pi, size=(num_points, 1)).astype(np.float32)
     radius = np.sqrt(rng.uniform(0.0, 1.0, size=(num_points, 1))).astype(np.float32)
@@ -59,7 +61,7 @@ def make_sample(rng: np.random.Generator, num_points: int, n_random_walks: int):
     conditions = []
     supervises = []
     for _ in range(n_random_walks):
-        walk_dir = normalize(rng.normal(size=(num_points, 3)).astype(np.float32))
+        walk_dir = normalize((rng.normal(size=(num_points, 3)) + perturb_sigma * rng.normal(size=(num_points, 3))).astype(np.float32))
         step = rng.uniform(0.02, 0.12, size=(num_points, 1)).astype(np.float32)
         condition = np.concatenate([walk_dir, step], axis=-1).astype(np.float32)
 
@@ -95,6 +97,7 @@ def main() -> None:
             rng=rng,
             num_points=args.num_points,
             n_random_walks=args.n_random_walks,
+            perturb_sigma=args.perturb_sigma,
         )
         np.save(sample_dir / "x.npy", x)
         for walk_idx, (condition, supervise) in enumerate(zip(conditions, supervises)):
@@ -105,6 +108,9 @@ def main() -> None:
             "qc_status": "pass",
             "num_points": int(args.num_points),
             "n_random_walks": int(args.n_random_walks),
+            "base_walks": int(args.base_walks),
+            "perturb_sigma": float(args.perturb_sigma),
+            "walk_steps": 3,
             "contains_real_patient_data": False,
             "contains_cfd_labels": False,
         }

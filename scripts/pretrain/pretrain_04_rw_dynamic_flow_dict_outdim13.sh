@@ -4,12 +4,15 @@ set -euo pipefail
 ROOT=${ROOT:-"$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"}
 LOG_DIR=${LOG_DIR:-"$ROOT/results/pretrain_training"}
 STAMP=$(date +%Y%m%d_%H%M%S)
-LOG_FILE=${LOG_FILE:-"$LOG_DIR/pretrain_01_rw_only_outdim9_${STAMP}.log"}
+LOG_FILE=${LOG_FILE:-"$LOG_DIR/pretrain_04_rw_dynamic_flow_dict_outdim13_${STAMP}.log"}
 
 GPU=${GPU:-0}
 DEVICE=${DEVICE:-auto}
 DATA_PATH=${DATA_PATH:-"$ROOT/HemoData/Vascular_PreTrain"}
-SAVE_NAME=${SAVE_NAME:-HemoPT_rw_only_outdim9}
+SAVE_NAME=${SAVE_NAME:-HemoPT_rw_dynamic_flow_dict_outdim13}
+PHYSICS_WEIGHT=${PHYSICS_WEIGHT:-0.25}
+WALL_MASK_PROB=${WALL_MASK_PROB:-0.25}
+WALL_MASK_MODE=${WALL_MASK_MODE:-all}
 EPOCHS=${EPOCHS:-250}
 EARLY_STOP=${EARLY_STOP:-1}
 PATIENCE=${PATIENCE:-75}
@@ -31,10 +34,12 @@ export PYTHONUNBUFFERED=1
 exec > >(tee "$LOG_FILE") 2>&1
 
 echo "Writing log to: $LOG_FILE"
-echo "Experiment: RW only, out_dim=9"
+echo "Experiment: RW-20 + fixed 8-mode analytic compact flow dictionary, out_dim=13"
 echo "Pretrain data: $DATA_PATH"
 echo "Checkpoint: $ROOT/checkpoints/${SAVE_NAME}.pt"
 echo "Best checkpoint mirror: $ROOT/checkpoints/${SAVE_NAME}_best.pt"
+echo "Physics weight: $PHYSICS_WEIGHT"
+echo "Wall mask: prob=$WALL_MASK_PROB mode=$WALL_MASK_MODE"
 echo "Epochs/early stop: max=$EPOCHS early_stop=$EARLY_STOP patience=$PATIENCE min_delta=$MIN_DELTA"
 echo "Periodic checkpoint interval: $CHECKPOINT_INTERVAL"
 echo "GPU: $GPU"
@@ -51,7 +56,7 @@ PYTHON=${PYTHON:-python}
 --geotype unstructured \
 --space_dim 3 \
 --fun_dim 8 \
---out_dim 9 \
+--out_dim 13 \
 --normalize 0 \
 --model Transolver \
 --n_hidden 256 \
@@ -75,6 +80,14 @@ PYTHON=${PYTHON:-python}
 --eval 0 \
 --save_name "$SAVE_NAME" \
 --n_random_walks 20 \
---base_walks 20
+--base_walks 20 \
+--vascular_physics_proxy true \
+--vascular_physics_proxy_mode learnable_generalized_flow_compact \
+  --dict_loss_weight_entropy 0.01 \
+--dict_loss_weight_noslip 0.1 \
+--dict_loss_weight_div 0.05 \
+--vascular_physics_weight "$PHYSICS_WEIGHT" \
+--vascular_wall_mask_prob "$WALL_MASK_PROB" \
+--vascular_wall_mask_mode "$WALL_MASK_MODE"
 
 echo "Run finished: $(date)"

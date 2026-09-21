@@ -23,6 +23,9 @@ class Exp_Basic(object):
             requested_device = "cuda" if torch.cuda.is_available() else "cpu"
         self.device = torch.device(requested_device)
         args.device = str(self.device)
+        if hasattr(self.dataset, "y_normalizer") and self.dataset.y_normalizer is not None:
+            if hasattr(self.dataset.y_normalizer, "to"):
+                self.dataset.y_normalizer.to(self.device)
         self.model = get_model(args).to(self.device)
         self.args = args
         print(self.args)

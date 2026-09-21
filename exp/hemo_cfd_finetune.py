@@ -60,6 +60,11 @@ class Exp_HemoCFDFinetune(Exp_Basic):
         if not os.path.exists(path):
             path = os.path.join("./checkpoints", pretrained_name + ".pt")
         pretrained = torch.load(path, map_location="cpu")
+        if isinstance(pretrained, dict):
+            for candidate_key in ("model", "state_dict", "model_state"):
+                if candidate_key in pretrained and isinstance(pretrained[candidate_key], dict):
+                    pretrained = pretrained[candidate_key]
+                    break
         model_state = self.model.state_dict()
         filtered = {
             k: v for k, v in pretrained.items()
@@ -68,6 +73,8 @@ class Exp_HemoCFDFinetune(Exp_Basic):
             and "mlp2" not in k
             and "ln_3" not in k
         }
+        if len(filtered) == 0:
+            print(f"[Pretrain WARNING] 0 compatible parameters were loaded from {path}! Check the checkpoint structure or keys.")
         model_state.update(filtered)
         self.model.load_state_dict(model_state)
         print(f"[Pretrain] Loaded {len(filtered)}/{len(pretrained)} compatible parameters from {path}")
@@ -298,7 +305,7 @@ class Exp_HemoCFDFinetune(Exp_Basic):
         with torch.no_grad():
             pbar = tqdm(loader, desc=desc, total=len(loader), dynamic_ncols=True, mininterval=2.0)
             for pos, fx, cond, y in pbar:
-                pos, fx, cond, y = pos.cuda(), fx.cuda(), cond.cuda(), y.cuda()
+                pos, fx, cond, y = pos.to(self.device), fx.to(self.device), cond.to(self.device), y.to(self.device)
                 out = self._forward(pos, fx, cond)
                 out_dec = self._maybe_decode(out)
                 y_dec = y
@@ -379,7 +386,7 @@ class Exp_HemoCFDFinetune(Exp_Basic):
             pbar = tqdm(self.train_loader, desc=f"Epoch {ep + 1}/{self.args.epochs} train",
                         total=len(self.train_loader), dynamic_ncols=True, mininterval=2.0)
             for pos, fx, cond, y in pbar:
-                pos, fx, cond, y = pos.cuda(), fx.cuda(), cond.cuda(), y.cuda()
+                pos, fx, cond, y = pos.to(self.device), fx.to(self.device), cond.to(self.device), y.to(self.device)
                 out = self._forward(pos, fx, cond)
                 loss = self._training_loss(out, y)
                 optimizer.zero_grad()
@@ -480,8 +487,8 @@ class Exp_HemoCFDFinetune(Exp_Basic):
         saved = 0
         with torch.no_grad():
             for pos, fx, cond, y in self.test_loader:
-                pos_cuda, fx_cuda, cond_cuda = pos.cuda(), fx.cuda(), cond.cuda()
-                out = self._maybe_decode(self._forward(pos_cuda, fx_cuda, cond_cuda)).cpu()
+                pos_dev, fx_dev, cond_dev = pos.to(self.device), fx.to(self.device), cond.to(self.device)
+                out = self._maybe_decode(self._forward(pos_dev, fx_dev, cond_dev)).cpu()
                 for b in range(pos.shape[0]):
                     self._plot_case(pos[b].numpy(), y[b].numpy(), out[b].numpy(), saved, out_dir)
                     saved += 1
@@ -521,7 +528,7 @@ class Exp_HemoCFDFinetune(Exp_Basic):
         plt.close(fig)
 
     def test(self):
-        self.model.load_state_dict(torch.load("./checkpoints/" + self.args.save_name + ".pt"))
+        self.model.load_state_dict(torch.load("./checkpoints/" + self.args.save_name + ".pt", map_location=self.device))
         metrics = self.vali(desc="Test")
         if self.args.loader in ("VMRCFD", "HemoVMRCFD"):
             print(f"eval split:{self.args.vmr_eval_split}")

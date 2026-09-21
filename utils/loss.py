@@ -34,6 +34,7 @@ class L2Loss(object):
 
         diff_norms = torch.norm(x.reshape(num_examples, -1) - y.reshape(num_examples, -1), self.p, 1)
         y_norms = torch.norm(y.reshape(num_examples, -1), self.p, 1)
+        y_norms = y_norms.clamp_min(torch.finfo(y_norms.dtype).eps)
         if self.reduction:
             if self.size_average:
                 return torch.mean(diff_norms / y_norms)

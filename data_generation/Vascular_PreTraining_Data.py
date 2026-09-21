@@ -87,7 +87,7 @@ def _meta_matches_expected(meta, expected):
 
 def expected_generation_meta(stl_path, dataset_name, n_random_walks, base_walks,
                              perturb_sigma, geometry_backend, collision_backend,
-                             save_dtype):
+                             save_dtype, walk_steps=WALK_STEPS):
     return {
         "dataset": dataset_name,
         "source_path": os.path.abspath(stl_path),
@@ -97,7 +97,7 @@ def expected_generation_meta(stl_path, dataset_name, n_random_walks, base_walks,
         "n_random_walks": int(n_random_walks),
         "base_walks": int(min(base_walks, n_random_walks)),
         "perturb_sigma": float(perturb_sigma),
-        "walk_steps": WALK_STEPS,
+        "walk_steps": int(walk_steps),
         "geometry_backend_requested": geometry_backend,
         "collision_backend": collision_backend,
         "save_dtype": save_dtype,
@@ -691,6 +691,35 @@ def multi_step_constrained_walk_inside(geometry_query, vtk_implicit, vol_points,
             'directions': directions, 'step_lengths': step_lengths}
 
 
+def build_probe_initializers(total_pts, n_random_walks, base_walks, perturb_sigma,
+                            surface_count=0):
+    if total_pts <= 0 or n_random_walks <= 0 or base_walks <= 0:
+        raise ValueError("total_pts, n_random_walks, and base_walks must be positive")
+    base_count = min(int(base_walks), int(n_random_walks))
+    base_bank = []
+    for _ in range(base_count):
+        phi = np.random.uniform(0, 2 * np.pi, size=(total_pts, 1))
+        cos_theta = np.random.uniform(-1, 1, size=(total_pts, 1))
+        sin_theta = np.sqrt(np.maximum(0.0, 1.0 - cos_theta ** 2))
+        base_dirs = np.concatenate([sin_theta * np.cos(phi), sin_theta * np.sin(phi), cos_theta], axis=1).astype(np.float32)
+        base_steps = np.random.uniform(MIN_STEP, MAX_STEP, size=(total_pts,)).astype(np.float32)
+        if surface_count > 0:
+            base_steps[-int(surface_count):] = 0.0
+        base_bank.append((base_dirs, base_steps))
+    directions, step_lengths = [], []
+    for walk_idx in range(int(n_random_walks)):
+        base_dirs, base_steps = base_bank[walk_idx % base_count]
+        if perturb_sigma > 0.0:
+            perturbed_dirs = base_dirs + np.random.randn(*base_dirs.shape).astype(np.float32) * perturb_sigma
+            norms = np.linalg.norm(perturbed_dirs, axis=1, keepdims=True)
+            active_dirs = perturbed_dirs / np.maximum(norms, 1e-8)
+        else:
+            active_dirs = base_dirs.copy()
+        directions.append(active_dirs.astype(np.float32))
+        step_lengths.append(base_steps.copy())
+    return directions, step_lengths
+
+
 def process_single_mesh(stl_path, save_root, dataset_name,
                         n_random_walks=N_RANDOM_WALKS,
                         base_walks=BASE_WALKS,
@@ -699,7 +728,8 @@ def process_single_mesh(stl_path, save_root, dataset_name,
                         collision_backend="fcpw_ray",
                         save_dtype="float16",
                         force=False,
-                        qc_row=None):
+                        qc_row=None,
+                        walk_steps=WALK_STEPS):
     """Process one STL file into pre-training data."""
     name = os.path.splitext(os.path.basename(stl_path))[0]
     save_dir = os.path.join(save_root, dataset_name, name)
@@ -709,7 +739,7 @@ def process_single_mesh(stl_path, save_root, dataset_name,
     np_save_dtype = dtype_from_name(save_dtype)
     expected_meta = expected_generation_meta(
         stl_path, dataset_name, n_random_walks, base_walks, perturb_sigma,
-        geometry_backend, collision_backend, save_dtype)
+        geometry_backend, collision_backend, save_dtype, walk_steps=walk_steps)
 
     if force:
         remove_expected_output_files(save_dir, n_random_walks)
@@ -805,32 +835,26 @@ def process_single_mesh(stl_path, save_root, dataset_name,
 
         np.save(os.path.join(save_dir, "x.npy"), x)
 
-        # Generate random walks
-        base_walk_results = []
-        n_base_walks = min(base_walks, n_random_walks)
-        for w in range(n_base_walks):
-            result = multi_step_constrained_walk_inside(
-                geometry_query, vtk_dist, vol_pts, surf_pts,
-                collision_backend=collision_backend)
-            base_walk_results.append(result)
-
-        # Generate one perturbed training view from each base probe. Base
-        # walks are seeds only and are never saved as training views.
-        for j in range(n_random_walks):
-            base_idx = j % n_base_walks
-            base_dirs = base_walk_results[base_idx]['directions']
-            base_steps = base_walk_results[base_idx]['step_lengths']
-
-            perturbed_dirs = base_dirs + np.random.randn(*base_dirs.shape).astype(np.float32) * perturb_sigma
-            norms = np.linalg.norm(perturbed_dirs, axis=1, keepdims=True)
-            perturbed_dirs = perturbed_dirs / (norms + 1e-8)
+        # Generate base probes, then reuse them cyclically with independent perturbations.
+        total_pts = len(vol_pts) + len(surf_pts)
+        directions, step_lengths = build_probe_initializers(
+            total_pts, n_random_walks, base_walks, perturb_sigma,
+            surface_count=len(surf_pts)
+        )
+        final_walk_results = []
+        for w in range(n_random_walks):
+            active_dirs = directions[w]
+            base_steps = step_lengths[w]
 
             result = multi_step_constrained_walk_inside(
                 geometry_query, vtk_dist, vol_pts, surf_pts,
-                init_directions=perturbed_dirs,
+                steps=walk_steps,
+                init_directions=active_dirs,
                 init_step_lengths=base_steps,
                 collision_backend=collision_backend)
+            final_walk_results.append(result)
 
+        for j, result in enumerate(final_walk_results):
             np.save(os.path.join(save_dir, f"supervise_{j}.npy"),
                     result['supervise'].astype(np_save_dtype))
             np.save(os.path.join(save_dir, f"condition_{j}.npy"),
@@ -856,9 +880,9 @@ def process_single_mesh(stl_path, save_root, dataset_name,
                    padded_volume_points=padded_volume_points,
                    padded_ratio=float(padded_ratio),
                    n_random_walks=n_random_walks,
-                   base_walks=n_base_walks,
+                   base_walks=min(int(base_walks), int(n_random_walks)),
                    perturb_sigma=perturb_sigma,
-                   walk_steps=WALK_STEPS,
+                   walk_steps=walk_steps,
                    geometry_backend_requested=geometry_backend,
                    geometry_backend_effective=geometry_query.backend,
                    collision_backend=collision_backend,
@@ -914,7 +938,7 @@ def main():
     parser.add_argument('--n_random_walks', type=int, default=N_RANDOM_WALKS,
                         help='Number of lifted dynamics samples per mesh')
     parser.add_argument('--base_walks', type=int, default=BASE_WALKS,
-                        help='Number of base probes; each yields one perturbed training view')
+                        help='Number of independently sampled base walks before perturbation')
     parser.add_argument('--perturb_sigma', type=float, default=PERTURB_SIGMA,
                         help='Gaussian perturbation std for directions after base walks')
     parser.add_argument('--geometry_backend', type=str, default='auto',

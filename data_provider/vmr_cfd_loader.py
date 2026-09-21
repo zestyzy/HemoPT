@@ -70,6 +70,7 @@ class VMRCFD(object):
     """Loader for processed VMR CFD interior-node samples."""
 
     def __init__(self, args):
+        self.args = args
         self.data_path = args.data_path
         self.batch_size = args.batch_size
         self.ntrain = args.ntrain
@@ -409,7 +410,10 @@ class VMRCFD(object):
             else:
                 self.y_normalizer = UnitGaussianNormalizer(train_y)
             train_y = self.y_normalizer.encode(train_y)
-            self.y_normalizer.cuda()
+            if torch.cuda.is_available() and getattr(self.args, "device", "auto") != "cpu":
+                self.y_normalizer.cuda()
+            else:
+                self.y_normalizer.cpu()
 
         train_loader = torch.utils.data.DataLoader(
             torch.utils.data.TensorDataset(train_pos, train_fx, train_cond, train_y),

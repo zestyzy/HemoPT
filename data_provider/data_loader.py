@@ -60,7 +60,10 @@ class DrivAerML(object):
                 self.y_normalizer = UnitGaussianNormalizer(train_y)
 
             train_y = self.y_normalizer.encode(train_y)
-            self.y_normalizer.cuda()
+            if torch.cuda.is_available() and getattr(getattr(self, "args", None), "device", "auto") != "cpu":
+                self.y_normalizer.cuda()
+            else:
+                self.y_normalizer.cpu()
 
         train_loader = torch.utils.data.DataLoader(
             torch.utils.data.TensorDataset(train_pos, train_pos, train_cond, train_y),
@@ -140,7 +143,10 @@ class NASA(object):
                 self.y_normalizer = UnitGaussianNormalizer(train_y)
 
             train_y = self.y_normalizer.encode(train_y)
-            self.y_normalizer.cuda()
+            if torch.cuda.is_available() and getattr(getattr(self, "args", None), "device", "auto") != "cpu":
+                self.y_normalizer.cuda()
+            else:
+                self.y_normalizer.cpu()
 
         train_loader = torch.utils.data.DataLoader(
             torch.utils.data.TensorDataset(train_pos, train_pos, train_cond, train_y),
@@ -206,7 +212,10 @@ class AirCraft(object):
                 self.y_normalizer = UnitGaussianNormalizer(train_y)
 
             train_y = self.y_normalizer.encode(train_y)
-            self.y_normalizer.cuda()
+            if torch.cuda.is_available() and getattr(getattr(self, "args", None), "device", "auto") != "cpu":
+                self.y_normalizer.cuda()
+            else:
+                self.y_normalizer.cpu()
 
         train_loader = torch.utils.data.DataLoader(
             torch.utils.data.TensorDataset(train_pos, train_pos, train_cond, train_y),
@@ -276,7 +285,10 @@ class DTCHull(object):
                 self.y_normalizer = UnitGaussianNormalizer(train_y)
 
             train_y = self.y_normalizer.encode(train_y)
-            self.y_normalizer.cuda()
+            if torch.cuda.is_available() and getattr(getattr(self, "args", None), "device", "auto") != "cpu":
+                self.y_normalizer.cuda()
+            else:
+                self.y_normalizer.cpu()
 
         train_loader = torch.utils.data.DataLoader(
             torch.utils.data.TensorDataset(train_pos, train_pos, train_cond, train_y),
@@ -342,7 +354,10 @@ class Car_Crash(object):
                 self.y_normalizer = UnitGaussianNormalizer(train_y)
 
             train_y = self.y_normalizer.encode(train_y)
-            self.y_normalizer.cuda()
+            if torch.cuda.is_available() and getattr(getattr(self, "args", None), "device", "auto") != "cpu":
+                self.y_normalizer.cuda()
+            else:
+                self.y_normalizer.cpu()
             print(self.y_normalizer.mean)
             print(self.y_normalizer.std)
 

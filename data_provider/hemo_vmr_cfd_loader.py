@@ -139,7 +139,10 @@ class HemoVMRCFD(object):
             reference_y = vmr_train_y if self.norm_scope == "vmr_train" else train_y
             self.y_normalizer = self._make_normalizer(reference_y)
             train_y = self.y_normalizer.encode(train_y)
-            self.y_normalizer.cuda()
+            if torch.cuda.is_available() and getattr(getattr(self, "args", None), "device", "auto") != "cpu":
+                self.y_normalizer.cuda()
+            else:
+                self.y_normalizer.cpu()
 
         loader_kwargs = {
             "num_workers": self.num_workers,

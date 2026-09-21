@@ -58,12 +58,17 @@ parser.add_argument('--fun_dim', type=int, default=0, help='input observation di
 parser.add_argument('--out_dim', type=int, default=1, help='output observation dimension')
 
 ## task
-parser.add_argument('--task', type=str, default='steady',
-                    help='select from [steady, steady_cond, vascular_pretrain, hemo_cfd_finetune]')
+parser.add_argument('--task', type=str, required=True,
+                    choices=['steady_cond', 'vascular_pretrain', 'hemo_cfd_finetune'],
+                    help='select from [steady_cond, vascular_pretrain, hemo_cfd_finetune]')
 parser.add_argument('--dynamics', type=str, default='hull',
                     help='select from [hull, craft, drivAerml, nasa, crash]')
-parser.add_argument('--n_random_walks', type=int, default=100,
-                    help='number of lifted dynamics samples per geometry for vascular pre-training')
+parser.add_argument('--n_random_walks', type=int, default=20,
+                    help='number of random-walk probe views per vascular geometry')
+parser.add_argument('--base_walks', type=int, default=20,
+                    help='number of base random walks before perturbation')
+parser.add_argument('--walk_steps', type=int, default=3,
+                    help='number of random-walk trajectory steps per probe (default: 3)')
 parser.add_argument('--vascular_qc_statuses', type=str, nargs='+', default=['pass', 'warn'],
                     help='meta.json qc_status values allowed by the VascularPretrain loader')
 parser.add_argument('--vascular_qc_manifest', type=str,
@@ -79,12 +84,32 @@ parser.add_argument('--vascular_physics_proxy_mode', type=str, default='full',
                         'generalized_flow_compact',
                         'conditioned_generalized_flow_compact',
                         'generalized_flow_bank',
+                        'learnable_dynamic_flow_dict',
+                        'learnable_generalized_flow_compact',
                     ],
-                    help='full appends scalar proxies; velocity modes append flow/speed targets')
+                    help='full appends scalar proxies; velocity modes append flow/speed targets; '
+                         'learnable_generalized_flow_compact uses a fixed 8-mode analytic bank with an 8-way gate')
 parser.add_argument('--vascular_physics_weight', type=float, default=0.25,
                     help='loss weight for VascularPretrain physics proxy targets')
 parser.add_argument('--vascular_wall_mask_prob', type=float, default=0.0,
                     help='per-sample probability of masking wall geometry channels during VascularPretrain training')
+parser.add_argument('--dict_num_modes', type=int, default=4,
+                    help='number of learnable flow modes in the legacy NeuralFlowDictionary; '
+                         'learnable_generalized_flow_compact always uses 8 analytic modes')
+parser.add_argument('--dict_loss_weight_noslip', type=float, default=0.1,
+                    help='loss weight for wall no-slip condition in flow dictionary')
+parser.add_argument('--dict_loss_weight_div', type=float, default=0.05,
+                    help='loss weight for divergence penalty in flow dictionary')
+parser.add_argument('--dict_loss_weight_energy', type=float, default=0.1,
+                    help='loss weight for kinetic energy scale constraint in flow dictionary')
+parser.add_argument('--dict_loss_weight_entropy', type=float, default=0.01,
+                    help='loss weight for routing gate entropy regularizer in flow dictionary')
+parser.add_argument('--dict_loss_weight_ortho', type=float, default=0.05,
+                    help='loss weight for mode orthogonality regularizer in flow dictionary')
+parser.add_argument('--rw_encoder_hidden_dim', type=int, default=16,
+                    help='hidden width of the three-step random-walk trajectory encoder')
+parser.add_argument('--rw_encoder_feature_dim', type=int, default=16,
+                    help='point-wise feature width emitted by the random-walk trajectory encoder')
 parser.add_argument('--vascular_wall_mask_mode', type=str, default='all',
                     choices=['all', 'distance', 'direction'],
                     help='which wall geometry channels to mask when vascular_wall_mask_prob triggers')

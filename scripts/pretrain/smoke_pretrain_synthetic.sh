@@ -12,7 +12,8 @@ cd "$ROOT"
   --out_dir "$DATA_PATH" \
   --num_samples 4 \
   --num_points 64 \
-  --n_random_walks 2 \
+  --n_random_walks 20 \
+  --base_walks 20 \
   --seed 2026
 
 "$PYTHON" run.py \
@@ -37,7 +38,8 @@ cd "$ROOT"
   --n_heads 2 \
   --slice_num 4 \
   --geotype unstructured \
-  --n_random_walks 2 \
+  --n_random_walks 20 \
+  --base_walks 20 \
   --vascular_physics_proxy true \
   --vascular_physics_proxy_mode conditioned_generalized_flow_compact \
   --vascular_physics_weight 1.0 \

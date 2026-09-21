@@ -18,6 +18,7 @@ data_provider/        PyTorch data loaders.
 exp/                  Training loops for pretraining and downstream tasks.
 layers/               Physics-attention layers.
 models/               Transolver model definition.
+pic/                  Figure assets inherited from the base code.
 scripts/pretrain/     Reproducible pretraining and smoke-test scripts.
 utils/                Losses, normalization, optimization, and visualization.
 run.py                Main training entry point.
@@ -123,39 +124,43 @@ PYTHON=python DEVICE=cuda GPU=0 bash scripts/pretrain/smoke_pretrain_synthetic.s
 The smoke test writes temporary outputs under `.smoke_data/`, `checkpoints/`,
 and `training_logs/`. These directories are ignored by git.
 
-## Main HemoPT Pretraining
+## Pretraining Paradigms
 
-The training configuration uses 20 base probes, each perturbed once, yielding
-20 final training views. Base probes themselves are not included as training
-views. Use `--base_walks 20 --n_random_walks 20`.
-
-After preparing a processed vascular pretraining dataset, run:
+### 1. Canonical Flow Proxy Pretraining (Paper Mainline)
+Uses the deterministic, non-degenerate geometry-conditioned flow proxy:
 
 ```bash
-DATA_PATH=/path/to/Vascular_PreTrain \
-PYTHON=python \
-DEVICE=cuda \
-GPU=0 \
-bash scripts/pretrain/pretrain_03_rw_generalized_flow_compact_outdim13.sh
+DATA_PATH=/path/to/Vascular_PreTrain PYTHON=python DEVICE=cuda GPU=0 bash scripts/pretrain/pretrain_03_rw_generalized_flow_compact_outdim13.sh
 ```
 
 This script uses:
-
 - `--loader VascularPretrain`
 - `--task vascular_pretrain`
 - `--fun_dim 8`
 - `--out_dim 13`
+- `--n_random_walks 20`
+- `--base_walks 20`
 - `--vascular_physics_proxy true`
 - `--vascular_physics_proxy_mode conditioned_generalized_flow_compact`
 
-For a geometry-only random-walk pretraining baseline:
+### 2. Learnable Dynamic Flow Dictionary Pretraining (Advanced SSL Extension)
+Uses the self-supervised Neural Flow Dictionary with kinetic energy regularization, unmasked no-slip boundary enforcement, and MLS divergence minimization:
 
 ```bash
-DATA_PATH=/path/to/Vascular_PreTrain \
-PYTHON=python \
-DEVICE=cuda \
-GPU=0 \
-bash scripts/pretrain/pretrain_01_rw_only_outdim9.sh
+DATA_PATH=/path/to/Vascular_PreTrain PYTHON=python DEVICE=cuda GPU=0 bash scripts/pretrain/pretrain_04_rw_dynamic_flow_dict_outdim13.sh
+```
+
+This script uses:
+- `--vascular_physics_proxy_mode learnable_dynamic_flow_dict`
+- `--dict_num_modes 4`
+- `--dict_loss_weight_energy 0.1`
+- `--dict_loss_weight_noslip 0.1`
+- `--dict_loss_weight_div 0.05`
+- `--dict_loss_weight_ortho 0.05`
+
+### 3. Geometry-Only Random-Walk Pretraining (GeoPT Baseline)
+```bash
+DATA_PATH=/path/to/Vascular_PreTrain PYTHON=python DEVICE=cuda GPU=0 bash scripts/pretrain/pretrain_01_rw_only_outdim9.sh
 ```
 
 ## Leakage-Safe Release Notes

@@ -13,6 +13,7 @@ PHYSICS_PROXY_DIM = 7
 VELOCITY_PROXY_DIM = 4
 GENERALIZED_FLOW_COMPACT_DIM = 4
 GENERALIZED_FLOW_BANK_DIM = 32
+ANALYTIC_FLOW_MODE_COUNT = 8
 PHYSICS_PROXY_DIMS = {
     "full": PHYSICS_PROXY_DIM,
     "velocity_only": VELOCITY_PROXY_DIM,
@@ -20,6 +21,8 @@ PHYSICS_PROXY_DIMS = {
     "generalized_flow_compact": GENERALIZED_FLOW_COMPACT_DIM,
     "conditioned_generalized_flow_compact": GENERALIZED_FLOW_COMPACT_DIM,
     "generalized_flow_bank": GENERALIZED_FLOW_BANK_DIM,
+    "learnable_dynamic_flow_dict": GENERALIZED_FLOW_COMPACT_DIM,
+    "learnable_generalized_flow_compact": GENERALIZED_FLOW_COMPACT_DIM,
 }
 
 
@@ -53,9 +56,9 @@ def _load_qc_manifest(path):
 
 
 class _VascularPretrainDataset(torch.utils.data.Dataset):
-    def __init__(self, sample_dirs, n_random_walks=100, random_walk=True,
+    def __init__(self, sample_dirs, n_random_walks=20, random_walk=True,
                  physics_proxy=False, physics_proxy_mode="full",
-                 wall_mask_prob=0.0, wall_mask_mode="all"):
+                 wall_mask_prob=0.0, wall_mask_mode="all", walk_steps=3):
         self.sample_dirs = list(sample_dirs)
         self.n_random_walks = n_random_walks
         self.random_walk = random_walk
@@ -63,7 +66,10 @@ class _VascularPretrainDataset(torch.utils.data.Dataset):
         self.physics_proxy_mode = physics_proxy_mode
         self.wall_mask_prob = float(wall_mask_prob)
         self.wall_mask_mode = wall_mask_mode
+        self.walk_steps = int(walk_steps)
+        self.return_analytic_bank = physics_proxy_mode == "learnable_generalized_flow_compact"
         self._proxy_meta_cache = {}
+        self._analytic_bank_cache = {}
 
     def __len__(self):
         return len(self.sample_dirs)
@@ -72,11 +78,42 @@ class _VascularPretrainDataset(torch.utils.data.Dataset):
         sample_dir = self.sample_dirs[idx]
         walk_idx = random.randrange(self.n_random_walks) if self.random_walk else 0
 
-        x = np.load(os.path.join(sample_dir, "x.npy")).astype(np.float32)
-        condition = np.load(os.path.join(sample_dir, f"condition_{walk_idx}.npy")).astype(np.float32)
-        supervise = np.load(os.path.join(sample_dir, f"supervise_{walk_idx}.npy")).astype(np.float32)
+        # Fail closed on corrupt samples: never substitute a different geometry.
+        x_path = os.path.join(sample_dir, "x.npy")
+        if not (os.path.exists(x_path) and os.path.getsize(x_path) > 1000):
+            raise FileNotFoundError(f"Missing or corrupted geometry file: {x_path}")
+        x = np.load(x_path).astype(np.float32)
+        cond_path = os.path.join(sample_dir, f"condition_{walk_idx}.npy")
+        sup_path = os.path.join(sample_dir, f"supervise_{walk_idx}.npy")
+
+        # Recover a missing walk only from another complete pair in this same sample.
+        if not (os.path.exists(cond_path) and os.path.exists(sup_path)):
+            try:
+                available = [
+                    int(f.split("_")[1].split(".")[0])
+                    for f in os.listdir(sample_dir)
+                    if f.startswith("condition_") and f.endswith(".npy")
+                    and os.path.exists(os.path.join(sample_dir, f.replace("condition_", "supervise_")))
+                    and os.path.getsize(os.path.join(sample_dir, f)) > 100
+                    and os.path.getsize(os.path.join(sample_dir, f.replace("condition_", "supervise_"))) > 100
+                ]
+            except Exception:
+                available = []
+            if available:
+                fallback_idx = available[walk_idx % len(available)]
+                cond_path = os.path.join(sample_dir, f"condition_{fallback_idx}.npy")
+                sup_path = os.path.join(sample_dir, f"supervise_{fallback_idx}.npy")
+            else:
+                raise FileNotFoundError(f"No valid condition/supervise pairs found in {sample_dir}")
+
+        condition = np.load(cond_path).astype(np.float32)
+        supervise = np.load(sup_path).astype(np.float32)
+        target_geom_dim = 3 * self.walk_steps
+        if supervise.shape[-1] > target_geom_dim:
+            supervise = supervise[:, :target_geom_dim]
 
         pos = x[:, :3]
+        unmasked_geom = x[:, 3:7].copy()
         geom = x[:, 3:7]
         if self.random_walk and self.wall_mask_prob > 0.0 and random.random() < self.wall_mask_prob:
             geom = geom.copy()
@@ -87,15 +124,28 @@ class _VascularPretrainDataset(torch.utils.data.Dataset):
             else:
                 geom[:, :] = 0.0
         fx = np.concatenate([geom, condition], axis=-1)
+        analytic_bank = None
         if self.physics_proxy:
             physics_proxy = self._build_physics_proxy(x, condition, sample_dir)
             supervise = np.concatenate([supervise, physics_proxy], axis=-1)
-        dummy_cond = np.zeros((1,), dtype=np.float32)
+        if self.return_analytic_bank:
+            analytic_bank = self._analytic_bank_cache.get(sample_dir)
+            if analytic_bank is None:
+                analytic_bank = self._build_generalized_flow_bank(
+                    x=x,
+                    sample_dir=sample_dir,
+                )
+                self._analytic_bank_cache[sample_dir] = analytic_bank
 
-        return (torch.from_numpy(pos),
-                torch.from_numpy(fx),
-                torch.from_numpy(dummy_cond),
-                torch.from_numpy(supervise))
+        batch = [
+            torch.from_numpy(pos),
+            torch.from_numpy(fx),
+            torch.from_numpy(unmasked_geom),
+            torch.from_numpy(supervise),
+        ]
+        if analytic_bank is not None:
+            batch.append(torch.from_numpy(analytic_bank))
+        return tuple(batch)
 
     def _build_physics_proxy(self, x, condition, sample_dir):
         pos = x[:, :3]
@@ -109,6 +159,11 @@ class _VascularPretrainDataset(torch.utils.data.Dataset):
         dist_norm = np.clip(dist / dist_scale, 0.0, 1.0).astype(np.float32)
         speed = (2.0 * dist_norm - dist_norm * dist_norm).astype(np.float32)
         flow = speed[:, None] * axis[None, :].astype(np.float32)
+        if self.physics_proxy_mode in (
+            "learnable_dynamic_flow_dict",
+            "learnable_generalized_flow_compact",
+        ):
+            return np.zeros((x.shape[0], GENERALIZED_FLOW_COMPACT_DIM), dtype=np.float32)
         if self.physics_proxy_mode == "conditioned_velocity":
             return self._build_conditioned_velocity_proxy(
                 x=x,
@@ -264,7 +319,10 @@ class _VascularPretrainDataset(torch.utils.data.Dataset):
         speed = np.linalg.norm(flow, axis=-1, keepdims=True)
         return np.concatenate([flow, speed], axis=-1).astype(np.float32)
 
-    def _build_generalized_flow_proxy(self, x, center, axis, side_axis, normal_axis, axial, dist_norm):
+    def _build_generalized_flow_proxy(
+        self, x, center, axis, side_axis, normal_axis, axial, dist_norm,
+        mode_override=None,
+    ):
         pos = x[:, :3].astype(np.float32)
         axis = axis.astype(np.float32)
         side_axis = side_axis.astype(np.float32)
@@ -320,7 +378,8 @@ class _VascularPretrainDataset(torch.utils.data.Dataset):
             recirc.astype(np.float32),
         ]
 
-        if self.physics_proxy_mode == "generalized_flow_bank":
+        proxy_mode = mode_override or self.physics_proxy_mode
+        if proxy_mode == "generalized_flow_bank":
             return np.concatenate([self._pack_flow(mode) for mode in modes], axis=-1).astype(np.float32)
 
         weights = np.array([0.24, 0.18, 0.16, 0.10, 0.14, 0.08, 0.06, 0.04], dtype=np.float32)
@@ -328,6 +387,28 @@ class _VascularPretrainDataset(torch.utils.data.Dataset):
         for weight, mode in zip(weights, modes):
             compact += weight * mode
         return self._pack_flow(compact)
+
+    def _build_generalized_flow_bank(self, x, sample_dir):
+        """Return the fixed analytic velocity atoms as (N, 8, 3)."""
+        pos = x[:, :3]
+        dist = np.maximum(x[:, 3], 0.0)
+        center, axis, side_axis, normal_axis, axial_min, axial_span, dist_scale = self._proxy_meta(
+            sample_dir, pos, dist)
+        axial = ((pos - center) @ axis - axial_min) / axial_span
+        axial = np.clip(axial, 0.0, 1.0).astype(np.float32)
+        dist_norm = np.clip(dist / dist_scale, 0.0, 1.0).astype(np.float32)
+        packed = self._build_generalized_flow_proxy(
+            x=x,
+            center=center,
+            axis=axis,
+            side_axis=side_axis,
+            normal_axis=normal_axis,
+            axial=axial,
+            dist_norm=dist_norm,
+            mode_override="generalized_flow_bank",
+        )
+        bank = packed.reshape(x.shape[0], ANALYTIC_FLOW_MODE_COUNT, 4)[..., :3]
+        return bank.astype(np.float32)
 
     def _proxy_meta(self, sample_dir, pos, dist):
         cached = self._proxy_meta_cache.get(sample_dir)
@@ -462,23 +543,43 @@ class VascularPretrain(object):
     Optional generalized_flow_bank mode appends 32 deterministic proxy targets:
       8 canonical flow modes, each [flow_x, flow_y, flow_z, speed].
       Use out_dim=41 when enabled.
+
+    Optional learnable_generalized_flow_compact mode exposes the same eight
+    canonical three-vector modes as an auxiliary `(N, 8, 3)` bank.  The
+    neural routing gate mixes the bank and returns a compact four-channel
+    proxy `[flow_x, flow_y, flow_z, speed]`; use out_dim=13.
     """
 
     def __init__(self, args):
+        self.args = args
         self.data_path = args.data_path
+        if not os.path.isabs(self.data_path):
+            codebase_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            self.resolved_data_path = os.path.join(codebase_root, self.data_path)
+        else:
+            self.resolved_data_path = self.data_path
         self.batch_size = args.batch_size
         self.ntrain = args.ntrain
         self.ntest = args.ntest
-        self.n_random_walks = getattr(args, "n_random_walks", 100)
+        self.n_random_walks = getattr(args, "n_random_walks", 20)
+        self.base_walks = getattr(args, "base_walks", 20)
+        self.walk_steps = getattr(args, "walk_steps", 3)
         self.num_workers = getattr(args, "num_workers", 0)
         self.pin_memory = getattr(args, "pin_memory", False)
         self.prefetch_factor = getattr(args, "prefetch_factor", 2)
+        self.seed = int(getattr(args, "seed", 2026))
+        self.save_name = getattr(args, "save_name", "vascular_pretrain")
         self.qc_statuses = _normalize_statuses(
             getattr(args, "vascular_qc_statuses", ["pass", "warn"]))
         self.qc_manifest = getattr(args, "vascular_qc_manifest", DEFAULT_VASCULAR_QC_MANIFEST)
         self.qc_by_sample = _load_qc_manifest(self.qc_manifest)
         self.physics_proxy = getattr(args, "vascular_physics_proxy", False)
         self.physics_proxy_mode = getattr(args, "vascular_physics_proxy_mode", "full")
+        if self.physics_proxy_mode == "learnable_generalized_flow_compact":
+            if self.n_random_walks <= 0:
+                raise ValueError(
+                    "learnable_generalized_flow_compact requires n_random_walks > 0"
+                )
         if self.physics_proxy_mode not in PHYSICS_PROXY_DIMS:
             raise ValueError(
                 "--vascular_physics_proxy_mode must be one of: "
@@ -489,81 +590,223 @@ class VascularPretrain(object):
             raise ValueError("--vascular_wall_mask_mode must be one of: all, distance, direction")
         if not 0.0 <= float(self.wall_mask_prob) <= 1.0:
             raise ValueError("--vascular_wall_mask_prob must be in [0, 1]")
-        expected_out_dim = GEOMETRIC_TARGET_DIM + PHYSICS_PROXY_DIMS[self.physics_proxy_mode]
+        expected_geom_dim = 3 * self.walk_steps
+        expected_out_dim = expected_geom_dim + PHYSICS_PROXY_DIMS[self.physics_proxy_mode]
         if self.physics_proxy and getattr(args, "out_dim", expected_out_dim) != expected_out_dim:
             raise ValueError(
                 f"--vascular_physics_proxy mode={self.physics_proxy_mode} requires --out_dim {expected_out_dim}; "
                 f"got {getattr(args, 'out_dim', None)}")
 
     def _passes_meta_qc(self, sample_dir):
-        dataset = os.path.basename(os.path.dirname(sample_dir))
-        sample_name = os.path.basename(sample_dir)
+        if not hasattr(self, '_meta_qc_cache'):
+            self._meta_qc_cache = {}
+        cached_res = self._meta_qc_cache.get(sample_dir)
+        if cached_res is not None:
+            return cached_res
+
         meta_path = os.path.join(sample_dir, "meta.json")
-        meta = {}
         if os.path.exists(meta_path):
             try:
                 with open(meta_path) as f:
                     meta = json.load(f)
+                if meta.get("success") is False:
+                    self._meta_qc_cache[sample_dir] = False
+                    return False
+                qc_status = meta.get("qc_status")
+                if qc_status is not None:
+                    res = str(qc_status).lower() in self.qc_statuses
+                    self._meta_qc_cache[sample_dir] = res
+                    return res
             except Exception:
-                return False
-            if meta.get("success") is False:
+                self._meta_qc_cache[sample_dir] = False
                 return False
 
-        qc_status = meta.get("qc_status")
-        if qc_status is None:
-            qc_row = self.qc_by_sample.get((dataset, sample_name))
-            if qc_row:
-                qc_status = qc_row.get("status")
-        if qc_status is None:
+        dataset = os.path.basename(os.path.dirname(sample_dir))
+        sample_name = os.path.basename(sample_dir)
+        qc_row = self.qc_by_sample.get((dataset, sample_name))
+        if qc_row:
+            qc_status = qc_row.get("status")
+            res = str(qc_status).lower() in self.qc_statuses
+            self._meta_qc_cache[sample_dir] = res
+            return res
+
+        self._meta_qc_cache[sample_dir] = True
+        return True
+
+    def _passes_walk_contract(self, sample_dir):
+        """Require the intended RW20/Base20 nonzero-perturbation data contract."""
+        if getattr(self, "physics_proxy_mode", "") != "learnable_generalized_flow_compact":
             return True
-        return str(qc_status).lower() in self.qc_statuses
+        meta_path = os.path.join(sample_dir, "meta.json")
+        try:
+            with open(meta_path) as f:
+                meta = json.load(f)
+            min_walks = getattr(self, "n_random_walks", 20)
+            min_steps = getattr(self, "walk_steps", 3)
+            return (
+                int(meta.get("n_random_walks", -1)) >= min_walks
+                and float(meta.get("perturb_sigma", 0.0)) > 0.0
+                and int(meta.get("walk_steps", -1)) >= min_steps
+            )
+        except (OSError, TypeError, ValueError):
+            return False
 
     def _discover_samples(self):
-        pattern = os.path.join(self.data_path, "*", "*", "x.npy")
-        candidates = sorted(glob.glob(pattern))
+        # Resolve self.data_path relative to codebase root if relative
+        if not os.path.isabs(self.data_path):
+            codebase_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            resolved_data_path = os.path.join(codebase_root, self.data_path)
+        else:
+            resolved_data_path = self.data_path
+
+        real_root = os.path.realpath(resolved_data_path)
+        real_root_str = real_root + os.sep
+        norm_root = os.path.abspath(resolved_data_path) + os.sep
+
+        def _is_valid_sample(sample_dir, check_stat=True):
+            s_abs = os.path.abspath(sample_dir)
+            if not os.path.isabs(sample_dir):
+                codebase_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+                s_abs = os.path.abspath(os.path.join(codebase_root, sample_dir))
+
+            # Fast string prefix check
+            if not s_abs.startswith(norm_root):
+                return False
+            if not check_stat:
+                return True
+            # Discovery is strict: keep only samples with geometry and at least
+            # one complete same-sample condition/supervise walk pair.
+            x_path = os.path.join(s_abs, "x.npy")
+            if not (os.path.exists(x_path) and os.path.getsize(x_path) > 1000):
+                return False
+            try:
+                has_pair = any(
+                    f.startswith("condition_") and f.endswith(".npy")
+                    and os.path.exists(os.path.join(s_abs, f.replace("condition_", "supervise_")))
+                    and os.path.getsize(os.path.join(s_abs, f)) > 100
+                    and os.path.getsize(os.path.join(s_abs, f.replace("condition_", "supervise_"))) > 100
+                    for f in os.listdir(s_abs)
+                )
+            except OSError:
+                return False
+            if not has_pair:
+                return False
+            return self._passes_meta_qc(s_abs) and self._passes_walk_contract(s_abs)
+
+        # Check pre-computed cache lists ONLY if all entries belong to self.data_path
+        target_needed = self.ntrain + self.ntest
+        shuffled_1000 = os.path.join(os.path.dirname(__file__), "samples_1000_shuffled.json")
+        if (target_needed > 200 or self.ntrain >= 900) and os.path.exists(shuffled_1000):
+            try:
+                with open(shuffled_1000, "r") as f:
+                    cached = json.load(f)
+                valid_cached = []
+                for p in cached:
+                    if _is_valid_sample(p, check_stat=True):
+                        valid_cached.append(p)
+                        if len(valid_cached) >= target_needed:
+                            break
+                if len(valid_cached) >= target_needed:
+                    print(f"Loaded {len(valid_cached)} validated samples from cache belonging strictly to {self.data_path}", flush=True)
+                    return valid_cached
+            except Exception as e:
+                print(f"Cache load skipped: {e}", flush=True)
+
+        cache_file = os.path.join(os.path.dirname(__file__), "vmr_pretrain_samples.json")
+        if os.path.exists(cache_file):
+            try:
+                with open(cache_file, "r") as f:
+                    cached = json.load(f)
+                valid_cached = []
+                for p in cached:
+                    if _is_valid_sample(p, check_stat=True):
+                        valid_cached.append(p)
+                        if len(valid_cached) >= target_needed:
+                            break
+                if len(valid_cached) >= target_needed:
+                    random.Random(self.seed).shuffle(valid_cached)
+                    print(f"Loaded {len(valid_cached)} validated samples from {cache_file} belonging strictly to {self.data_path}", flush=True)
+                    return valid_cached
+            except Exception as e:
+                print(f"Cache load skipped: {e}", flush=True)
+
+        # Dynamic discovery strictly within the resolved data root.
         sample_dirs = []
-        for x_path in candidates:
-            sample_dir = os.path.dirname(x_path)
-            if not self._passes_meta_qc(sample_dir):
-                continue
-            complete = True
-            for j in range(self.n_random_walks):
-                if not (os.path.exists(os.path.join(sample_dir, f"condition_{j}.npy")) and
-                        os.path.exists(os.path.join(sample_dir, f"supervise_{j}.npy"))):
-                    complete = False
-                    break
-            if complete:
-                sample_dirs.append(sample_dir)
+        try:
+            cohorts = [d for d in os.listdir(self.resolved_data_path) if os.path.isdir(os.path.join(self.resolved_data_path, d))]
+        except Exception:
+            cohorts = []
+
+        target_total = self.ntrain + self.ntest
+        for c in sorted(cohorts):
+            c_dir = os.path.join(self.resolved_data_path, c)
+            try:
+                cases = [os.path.join(c_dir, sub) for sub in os.listdir(c_dir) if os.path.isdir(os.path.join(c_dir, sub))]
+            except Exception:
+                cases = []
+            for s_dir in sorted(cases):
+                if _is_valid_sample(s_dir):
+                    sample_dirs.append(s_dir)
+                    # Short-circuit once we have collected enough verified samples for small cohort runs
+                    if target_total > 0 and len(sample_dirs) >= target_total * 2:
+                        break
+            if target_total > 0 and len(sample_dirs) >= target_total * 2:
+                break
+
+        random.Random(self.seed).shuffle(sample_dirs)
+        print(f"Dynamically discovered {len(sample_dirs)} verified samples under {self.resolved_data_path}", flush=True)
         return sample_dirs
 
     def get_loader(self, full_mesh=False):
-        sample_dirs = self._discover_samples()
-        if len(sample_dirs) == 0:
-            raise RuntimeError(f"No complete vascular pretrain samples found under {self.data_path}")
+        kfold = getattr(self.args, "kfold", 0) if hasattr(self, "args") else 0
+        fold_idx = getattr(self.args, "fold", 0) if hasattr(self, "args") else 0
+        codebase_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        manifest_path = os.path.join(codebase_root, "results", "pretrain_training", "pretrain_5fold_manifest.json")
 
-        ntest = min(self.ntest, max(1, len(sample_dirs) // 10))
-        ntrain = min(self.ntrain, max(0, len(sample_dirs) - ntest))
-        if ntrain <= 0:
-            ntrain = len(sample_dirs)
-            ntest = 0
+        if kfold > 1 and os.path.exists(manifest_path):
+            with open(manifest_path, "r") as mf:
+                manifest = json.load(mf)
+            fold_key = f"fold_{fold_idx}"
+            if fold_key in manifest["folds"]:
+                fold_info = manifest["folds"][fold_key]
+                train_dirs = [os.path.join(self.resolved_data_path, c) for c in fold_info["train_cases"]]
+                test_dirs = [os.path.join(self.resolved_data_path, c) for c in fold_info["val_cases"]]
+                sample_dirs = train_dirs + test_dirs
+                print(f"[5-Fold Loader] Loaded {fold_key}: {len(train_dirs)} train, {len(test_dirs)} val samples from manifest.", flush=True)
+            else:
+                raise ValueError(f"Fold {fold_key} not found in {manifest_path}")
+        else:
+            sample_dirs = self._discover_samples()
+            if len(sample_dirs) == 0:
+                raise RuntimeError(f"No complete vascular pretrain samples found under {self.data_path}")
+            if self.ntest <= 0:
+                raise ValueError("--ntest must be positive so evaluation remains independent")
+            if self.ntrain <= 0:
+                raise ValueError("--ntrain must be positive")
+            if len(sample_dirs) < 2:
+                raise RuntimeError("At least two valid samples are required for disjoint train/test splits")
 
-        train_dirs = sample_dirs[:ntrain]
-        test_dirs = sample_dirs[ntrain:ntrain + ntest]
-        if not test_dirs:
-            test_dirs = train_dirs[:min(1, len(train_dirs))]
+            ntest = min(self.ntest, max(1, len(sample_dirs) // 10))
+            ntrain = min(self.ntrain, max(0, len(sample_dirs) - ntest))
+            train_dirs = sample_dirs[:ntrain]
+            test_dirs = sample_dirs[ntrain:ntrain + ntest]
+            if not test_dirs:
+                raise RuntimeError("Unable to construct an independent test split")
 
         train_set = _VascularPretrainDataset(
             train_dirs, self.n_random_walks, random_walk=True,
             physics_proxy=self.physics_proxy,
             physics_proxy_mode=self.physics_proxy_mode,
             wall_mask_prob=self.wall_mask_prob,
-            wall_mask_mode=self.wall_mask_mode)
+            wall_mask_mode=self.wall_mask_mode,
+            walk_steps=self.walk_steps)
         test_set = _VascularPretrainDataset(
             test_dirs, self.n_random_walks, random_walk=False,
             physics_proxy=self.physics_proxy,
             physics_proxy_mode=self.physics_proxy_mode,
             wall_mask_prob=0.0,
-            wall_mask_mode=self.wall_mask_mode)
+            wall_mask_mode=self.wall_mask_mode,
+            walk_steps=self.walk_steps)
 
         loader_kwargs = {
             "num_workers": self.num_workers,
@@ -572,6 +815,32 @@ class VascularPretrain(object):
         if self.num_workers > 0:
             loader_kwargs["prefetch_factor"] = self.prefetch_factor
             loader_kwargs["persistent_workers"] = True
+
+        # Strict data_path assert (fast check first)
+        res_root = os.path.realpath(self.resolved_data_path) + os.sep
+        norm_root = os.path.abspath(self.resolved_data_path) + os.sep
+        for p in train_dirs + test_dirs:
+            p_abs = os.path.abspath(p)
+            if not (p_abs.startswith(norm_root) or os.path.realpath(p).startswith(res_root)):
+                raise AssertionError(f"Data path violation: sample {p} is outside {self.data_path}!")
+
+        # Save manifest for full auditability
+        save_name = getattr(self, "save_name", "vascular_pretrain")
+        manifest_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "results", "pretrain_training")
+        os.makedirs(manifest_dir, exist_ok=True)
+        manifest_path = os.path.join(manifest_dir, f"split_manifest_{save_name}.json")
+        try:
+            with open(manifest_path, "w") as mf:
+                json.dump({
+                    "data_path": os.path.realpath(self.resolved_data_path),
+                    "ntrain": len(train_dirs),
+                    "ntest": len(test_dirs),
+                    "train_samples": train_dirs,
+                    "test_samples": test_dirs
+                }, mf, indent=2)
+            print(f"Exported split manifest to {manifest_path}", flush=True)
+        except Exception as e:
+            print(f"Warning: failed to export split manifest: {e}", flush=True)
 
         train_loader = torch.utils.data.DataLoader(
             train_set, batch_size=self.batch_size, shuffle=True, **loader_kwargs)
