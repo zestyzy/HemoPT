@@ -693,43 +693,6 @@ class VascularPretrain(object):
                 return False
             return self._passes_meta_qc(s_abs) and self._passes_walk_contract(s_abs)
 
-        # Check pre-computed cache lists ONLY if all entries belong to self.data_path
-        target_needed = self.ntrain + self.ntest
-        shuffled_1000 = os.path.join(os.path.dirname(__file__), "samples_1000_shuffled.json")
-        if (target_needed > 200 or self.ntrain >= 900) and os.path.exists(shuffled_1000):
-            try:
-                with open(shuffled_1000, "r") as f:
-                    cached = json.load(f)
-                valid_cached = []
-                for p in cached:
-                    if _is_valid_sample(p, check_stat=True):
-                        valid_cached.append(p)
-                        if len(valid_cached) >= target_needed:
-                            break
-                if len(valid_cached) >= target_needed:
-                    print(f"Loaded {len(valid_cached)} validated samples from cache belonging strictly to {self.data_path}", flush=True)
-                    return valid_cached
-            except Exception as e:
-                print(f"Cache load skipped: {e}", flush=True)
-
-        cache_file = os.path.join(os.path.dirname(__file__), "vmr_pretrain_samples.json")
-        if os.path.exists(cache_file):
-            try:
-                with open(cache_file, "r") as f:
-                    cached = json.load(f)
-                valid_cached = []
-                for p in cached:
-                    if _is_valid_sample(p, check_stat=True):
-                        valid_cached.append(p)
-                        if len(valid_cached) >= target_needed:
-                            break
-                if len(valid_cached) >= target_needed:
-                    random.Random(self.seed).shuffle(valid_cached)
-                    print(f"Loaded {len(valid_cached)} validated samples from {cache_file} belonging strictly to {self.data_path}", flush=True)
-                    return valid_cached
-            except Exception as e:
-                print(f"Cache load skipped: {e}", flush=True)
-
         # Dynamic discovery strictly within the resolved data root.
         sample_dirs = []
         try:

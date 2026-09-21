@@ -1,179 +1,86 @@
-# HemoPT
+# HemoPT: Self-Supervised Pretraining with Dynamic Flow Dictionary for Hemodynamics
 
-This repository contains the code used for HemoPT, a proxy-supervised
-vascular pretraining framework for geometry-to-hemodynamics prediction.
+This repository contains the clean, reproducible implementation of **HemoPT**, a self-supervised vascular pretraining framework that couples geometry-conditioned random-walk probes with a learnable dynamic hemodynamic flow dictionary.
 
-HemoPT builds on a Transolver backbone and extends geometry-conditioned
-pretraining with compact hemodynamic proxy supervision. The main pretraining
-target contains a 9D random-walk spatial target and a 4D compact flow proxy.
-The compact flow proxy is generated from local morphology and probe conditions
-using `conditioned_generalized_flow_compact`.
+---
 
-## Repository Layout
+## 📁 Repository Layout
 
 ```text
-data_generation/      Vascular pretraining data generation utilities.
-data_preprocess/      Mask-to-STL, STL QC, and dataset preprocessing utilities.
-data_provider/        PyTorch data loaders.
-exp/                  Training loops for pretraining and downstream tasks.
-layers/               Physics-attention layers.
-models/               Transolver model definition.
-pic/                  Figure assets inherited from the base code.
-scripts/pretrain/     Reproducible pretraining and smoke-test scripts.
-utils/                Losses, normalization, optimization, and visualization.
-run.py                Main training entry point.
+├── data_generation/      Vascular random-walk probe generation routines.
+├── data_preprocess/      Vascular STL QC, capping, and CFD benchmark dataset processors.
+├── data_provider/        PyTorch datasets and dataloaders for pretraining and downstream CFD.
+├── exp/                  Training loops (vascular pretraining & downstream CFD fine-tuning).
+├── layers/               Physics-attention layers.
+├── models/               Transolver backbone and 8-mode Dynamic Flow Dictionary.
+├── scripts/              Standard execution scripts (smoke test, pretraining, fine-tuning, eval).
+├── tests/                Unit regression tests for dictionary, gradients, and contracts.
+├── utils/                Loss functions, normalizers, and optimization utilities.
+└── run.py                Main training entry point.
 ```
 
-## Data Policy
+---
 
-This code release does not include patient data, CFD labels, STL meshes,
-pretraining arrays, downstream arrays, checkpoints, logs, or paper results.
-Paths in scripts are repository-relative by default. Users should provide their
-own processed data paths through command-line arguments or environment
-variables.
+## 🛠️ Installation
 
-The HemoPT vascular preprocessing pipeline is organized as:
-
-```text
-segmentation masks (.nii/.nii.gz)
-  -> vascular STL meshes
-  -> STL QC / optional capping and component cleaning
-  -> VascularPreTrain arrays
-  -> VascularPretrain loader
-```
-
-For segmentation masks, convert masks to STL meshes with:
-
-```bash
-python data_preprocess/mask_to_stl.py \
-  --src_root /path/to/segmentation_masks \
-  --dst_root HemoData/Vascular_STL \
-  --dataset_name MyDataset \
-  --recursive
-```
-
-Then create an STL quality-control manifest:
-
-```bash
-python data_preprocess/vascular_stl_qc.py \
-  --root HemoData/Vascular_STL \
-  --out HemoData/Vascular_STL_QC
-```
-
-Optional capping and component-cleaning utilities are provided in
-`data_preprocess/vascular_cap_meshes.py` and
-`data_preprocess/clean_disconnected_vascular_stl.py`.
-
-After STL preprocessing, generate HemoPT pretraining arrays with:
-
-```bash
-python data_generation/Vascular_PreTraining_Data.py \
-  --save_root HemoData/Vascular_PreTrain \
-  --qc_manifest HemoData/Vascular_STL_QC/qc_manifest.jsonl \
-  --allow_missing_qc_manifest
-```
-
-The VascularPretrain loader expects the following processed layout:
-
-```text
-<data_path>/<dataset>/<sample>/
-  x.npy
-  condition_0.npy
-  supervise_0.npy
-  ...
-  meta.json
-```
-
-For HemoPT compact pretraining:
-
-- `x.npy` stores point coordinates and local wall morphology.
-- `condition_j.npy` stores the probe condition for random-walk view `j`.
-- `supervise_j.npy` stores the 9D random-walk spatial target.
-- The 4D compact flow proxy is constructed online by the loader when
-  `--vascular_physics_proxy true` and
-  `--vascular_physics_proxy_mode conditioned_generalized_flow_compact` are set.
-
-## Installation
-
-Create a Python environment with PyTorch, then install the required packages:
+Create a Python 3.9+ environment with PyTorch (>=1.13.0), then install the required dependencies:
 
 ```bash
 pip install -r requirements.txt
 ```
 
-The code is compatible with CPU for the synthetic smoke test. Full experiments
-should be run on GPUs.
+---
 
-## Synthetic Smoke Test
+## 🚀 Quick Start: 1-Minute Smoke Test
 
-The smoke test generates a tiny synthetic vascular pretraining dataset and runs
-one epoch of compact HemoPT pretraining. It does not use real STL, patient, or
-CFD data.
+We provide a self-contained smoke test that automatically generates a tiny synthetic vascular geometry dataset, executes 15 epochs of HemoPT pretraining with the 8-mode dynamic flow dictionary, tracks routing gate entropy, and verifies checkpoint synchronization without needing any external data:
 
 ```bash
-bash scripts/pretrain/smoke_pretrain_synthetic.sh
+bash scripts/smoke_test.sh
 ```
 
-Optional environment variables:
+Or run the unit regression test suite:
 
 ```bash
-PYTHON=python DEVICE=cpu bash scripts/pretrain/smoke_pretrain_synthetic.sh
-PYTHON=python DEVICE=cuda GPU=0 bash scripts/pretrain/smoke_pretrain_synthetic.sh
+pytest tests
 ```
 
-The smoke test writes temporary outputs under `.smoke_data/`, `checkpoints/`,
-and `training_logs/`. These directories are ignored by git.
+---
 
-## Pretraining Paradigms
+## 🔬 Pretraining & Downstream Fine-Tuning
 
-### 1. Canonical Flow Proxy Pretraining (Paper Mainline)
-Uses the deterministic, non-degenerate geometry-conditioned flow proxy:
+### 1. Self-Supervised Pretraining
+To train HemoPT on a processed vascular geometry dataset:
 
 ```bash
-DATA_PATH=/path/to/Vascular_PreTrain PYTHON=python DEVICE=cuda GPU=0 bash scripts/pretrain/pretrain_03_rw_generalized_flow_compact_outdim13.sh
+DATA_PATH=/path/to/Vascular_PreTrain GPU=0 bash scripts/run_pretrain.sh
 ```
 
-This script uses:
-- `--loader VascularPretrain`
-- `--task vascular_pretrain`
-- `--fun_dim 8`
-- `--out_dim 13`
-- `--n_random_walks 20`
-- `--base_walks 20`
-- `--vascular_physics_proxy true`
-- `--vascular_physics_proxy_mode conditioned_generalized_flow_compact`
+This runs:
+- Task: `vascular_pretrain`
+- Backbone: `Transolver`
+- Flow dictionary: 8-mode compact dynamic flow bank with learnable routing gate
+- Auxiliary losses: Wall no-slip, divergence penalty, kinetic energy scale, and gate entropy regularization.
 
-### 2. Learnable Dynamic Flow Dictionary Pretraining (Advanced SSL Extension)
-Uses the self-supervised Neural Flow Dictionary with kinetic energy regularization, unmasked no-slip boundary enforcement, and MLS divergence minimization:
+### 2. Downstream Hemodynamics CFD Fine-Tuning
+To fine-tune a pretrained checkpoint on downstream hemodynamic CFD datasets (e.g., VMR, Aneumo):
 
 ```bash
-DATA_PATH=/path/to/Vascular_PreTrain PYTHON=python DEVICE=cuda GPU=0 bash scripts/pretrain/pretrain_04_rw_dynamic_flow_dict_outdim13.sh
+DATA_PATH=/path/to/VMR_CFD LOADER=VMRCFD PRETRAINED=hemopt_pretrain_dynamic_dict GPU=0 bash scripts/run_finetune.sh
 ```
 
-This script uses:
-- `--vascular_physics_proxy_mode learnable_dynamic_flow_dict`
-- `--dict_num_modes 4`
-- `--dict_loss_weight_energy 0.1`
-- `--dict_loss_weight_noslip 0.1`
-- `--dict_loss_weight_div 0.05`
-- `--dict_loss_weight_ortho 0.05`
+### 3. Metric Evaluation
+To evaluate directional alignment ($C_\text{dir}$), magnitude relative error ($C_\text{mag}$), and gate entropy on trained models:
 
-### 3. Geometry-Only Random-Walk Pretraining (GeoPT Baseline)
 ```bash
-DATA_PATH=/path/to/Vascular_PreTrain PYTHON=python DEVICE=cuda GPU=0 bash scripts/pretrain/pretrain_01_rw_only_outdim9.sh
+python scripts/eval_alignment.py --ckpt checkpoints/your_checkpoint.pt --device cuda:0
 ```
 
-## Leakage-Safe Release Notes
+---
 
-This submission package was cleaned to avoid data leakage:
+## 🛡️ Double-Blind Compliance & Data Policy
 
-- no real datasets are included;
-- no checkpoint files are included;
-- no generated `.npy`, `.npz`, `.pkl`, `.h5`, `.stl`, or `.vtk` files are included;
-- no server-specific absolute paths are required by default;
-- no credentials or API keys are included.
-
-## Acknowledgements
-
-This implementation uses the Transolver architecture with HemoPT-specific
-vascular random-walk pretraining and compact hemodynamic proxy supervision.
+This submission package adheres strictly to double-blind conference guidelines:
+- **Zero personal or institutional identifiers** (usernames, hostnames, private IPs, credentials).
+- **No proprietary binary data or checkpoints** included in the repository.
+- All file paths default to repository-relative conventions.

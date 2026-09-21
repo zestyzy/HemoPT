@@ -59,8 +59,8 @@ parser.add_argument('--out_dim', type=int, default=1, help='output observation d
 
 ## task
 parser.add_argument('--task', type=str, required=True,
-                    choices=['steady_cond', 'vascular_pretrain', 'hemo_cfd_finetune'],
-                    help='select from [steady_cond, vascular_pretrain, hemo_cfd_finetune]')
+                    choices=['vascular_pretrain', 'hemo_cfd_finetune'],
+                    help='select from [vascular_pretrain, hemo_cfd_finetune]')
 parser.add_argument('--dynamics', type=str, default='hull',
                     help='select from [hull, craft, drivAerml, nasa, crash]')
 parser.add_argument('--n_random_walks', type=int, default=20,
@@ -250,17 +250,14 @@ set_seed(args.seed, args.deterministic)
 
 def main():
 
-    if args.task == 'steady_cond':
-        from exp.steady_cond import Exp_Steady
-        exp = Exp_Steady(args)
-    elif args.task == 'vascular_pretrain':
+    if args.task == 'vascular_pretrain':
         from exp.vascular_pretrain import Exp_VascularPretrain
         exp = Exp_VascularPretrain(args)
     elif args.task == 'hemo_cfd_finetune':
         from exp.hemo_cfd_finetune import Exp_HemoCFDFinetune
         exp = Exp_HemoCFDFinetune(args)
     else:
-        raise ValueError('task not supported')
+        raise ValueError(f"Unknown task: {args.task}")
 
     if eval:
         exp.test()
